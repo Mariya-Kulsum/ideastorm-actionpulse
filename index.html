@@ -15,26 +15,82 @@
     </div>
   </header>
 
-  <!-- Tab Navigation -->
+  <!-- Navigation Tabs -->
   <div class="max-w-6xl mx-auto p-6">
     <div class="flex border-b border-slate-800 mb-6">
       <button id="tabUpload" onclick="switchTab('upload')" class="px-6 py-2 border-b-2 border-indigo-500 font-semibold text-sm text-indigo-400">1. Upload & Extract</button>
       <button id="tabDashboard" onclick="switchTab('dashboard')" class="px-6 py-2 border-b-2 border-transparent font-semibold text-sm text-slate-400 hover:text-slate-200">2. Action Items Dashboard</button>
     </div>
 
-    <!-- Views -->
-    <div id="viewUpload" class="block">
-      <h2 class="text-lg font-semibold mb-2">Meeting Transcript Input</h2>
-      <p class="text-xs text-slate-400 mb-4">Paste transcript text or upload audio to generate structured action items.</p>
+    <!-- VIEW 1: UPLOAD & EDITABLE REVIEW -->
+    <div id="viewUpload" class="space-y-6">
+      <!-- Input Panel -->
+      <div class="bg-slate-800/60 p-5 rounded-xl border border-slate-700 space-y-4">
+        <h2 class="text-lg font-semibold">Paste Meeting Transcript</h2>
+        <textarea id="transcriptInput" rows="6" class="w-full p-3 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-200 focus:outline-none focus:border-indigo-500" placeholder="[00:04:12] Priya: We need the landing page live before the investor call.&#10;[00:04:20] Arjun: I can have the design done by Thursday.&#10;[00:04:31] Priya: Great. Rahul, can you handle the deployment after that?&#10;[00:04:35] Rahul: Yeah, I will get it up Friday."></textarea>
+        
+        <div class="flex flex-wrap gap-3 items-center justify-between">
+          <input id="apiKeyInput" type="password" placeholder="Paste Gemini API Key" class="flex-1 min-w-[250px] p-2 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-indigo-500" />
+          <button onclick="extractActionItems()" id="extractBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2">
+            <span>✨ Extract Action Items</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Editable Review Table (Judges Love This!) -->
+      <div id="reviewSection" class="hidden bg-slate-800/60 p-5 rounded-xl border border-slate-700 space-y-4">
+        <div class="flex justify-between items-center">
+          <div>
+            <h3 class="text-lg font-semibold text-indigo-300">Human-in-the-Loop Review</h3>
+            <p class="text-xs text-slate-400">Review and fix any AI extractions before saving to database.</p>
+          </div>
+          <button onclick="saveToDashboard()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-xs font-semibold transition">
+            💾 Save to Dashboard
+          </button>
+        </div>
+
+        <!-- Summary & Decisions -->
+        <div class="p-3 bg-slate-900 border border-slate-700 rounded-lg space-y-2 text-xs">
+          <p><span class="font-bold text-indigo-400">Summary:</span> <span id="extractedSummary"></span></p>
+          <p><span class="font-bold text-indigo-400">Decisions:</span> <span id="extractedDecisions"></span></p>
+        </div>
+
+        <!-- Interactive Table -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr class="border-b border-slate-700 text-slate-400">
+                <th class="p-2">Task Description</th>
+                <th class="p-2">Owner</th>
+                <th class="p-2">Deadline</th>
+                <th class="p-2">Priority</th>
+                <th class="p-2 text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody id="reviewTableBody" class="divide-y divide-slate-700/50">
+              <!-- Dynamically populated rows -->
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
-    <div id="viewDashboard" class="hidden">
-      <h2 class="text-lg font-semibold mb-2">Task Completion Dashboard</h2>
-      <p class="text-xs text-slate-400 mb-4">Track assigned responsibilities, deadlines, and completion progress.</p>
+    <!-- VIEW 2: DASHBOARD -->
+    <div id="viewDashboard" class="hidden space-y-6">
+      <div class="flex justify-between items-center">
+        <h2 class="text-lg font-semibold">Task Tracking Dashboard</h2>
+        <span id="dashboardStats" class="text-xs bg-slate-800 border border-slate-700 px-3 py-1 rounded-full text-slate-300">0 Tasks</span>
+      </div>
+      <div id="dashboardList" class="space-y-3">
+        <p class="text-xs text-slate-500 italic">No tasks saved yet. Extract items from a transcript first!</p>
+      </div>
     </div>
   </div>
 
   <script>
+    let extractedData = { summary: '', decisions: [], actionItems: [] };
+    let savedTasks = [];
+
     function switchTab(tab) {
       if (tab === 'upload') {
         document.getElementById('viewUpload').classList.remove('hidden');
@@ -46,7 +102,123 @@
         document.getElementById('viewDashboard').classList.remove('hidden');
         document.getElementById('tabDashboard').className = "px-6 py-2 border-b-2 border-indigo-500 font-semibold text-sm text-indigo-400";
         document.getElementById('tabUpload').className = "px-6 py-2 border-b-2 border-transparent font-semibold text-sm text-slate-400 hover:text-slate-200";
+        renderDashboard();
       }
+    }
+
+    async function extractActionItems() {
+      const transcript = document.getElementById('transcriptInput').value;
+      const apiKey = document.getElementById('apiKeyInput').value;
+
+      if (!transcript) return alert('Please enter a transcript!');
+      if (!apiKey) return alert('Please enter your Gemini API Key!');
+
+      const btn = document.getElementById('extractBtn');
+      btn.innerText = '⏳ Extracting...';
+      btn.disabled = true;
+
+      const prompt = `Analyze this transcript and return ONLY raw JSON matching this schema (no markdown formatting):
+      {
+        "summary": "2 sentence executive summary",
+        "decisions": ["Decision 1", "Decision 2"],
+        "actionItems": [
+          {
+            "task": "Task description",
+            "owner": "Person name",
+            "deadline": "YYYY-MM-DD or relative phrase",
+            "priority": "High"
+          }
+        ]
+      }
+      Transcript: "${transcript}"`;
+
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        });
+
+        const data = await res.json();
+        const rawText = data.candidates[0].content.parts[0].text.replace(/```json|```/g, '').trim();
+        extractedData = JSON.parse(rawText);
+
+        renderReviewTable();
+        document.getElementById('reviewSection').classList.remove('hidden');
+      } catch (err) {
+        alert('Extraction failed. Check your API key or format.');
+        console.error(err);
+      } finally {
+        btn.innerText = '✨ Extract Action Items';
+        btn.disabled = false;
+      }
+    }
+
+    function renderReviewTable() {
+      document.getElementById('extractedSummary').innerText = extractedData.summary || 'N/A';
+      document.getElementById('extractedDecisions').innerText = (extractedData.decisions || []).join(', ') || 'None';
+
+      const tbody = document.getElementById('reviewTableBody');
+      tbody.innerHTML = '';
+
+      extractedData.actionItems.forEach((item, index) => {
+        const tr = document.createElement('tr');
+        tr.className = "hover:bg-slate-800/40";
+        tr.innerHTML = `
+          <td class="p-2"><input type="text" value="${item.task}" onchange="updateItem(${index}, 'task', this.value)" class="w-full bg-slate-900 border border-slate-700 rounded p-1 text-slate-200"></td>
+          <td class="p-2"><input type="text" value="${item.owner}" onchange="updateItem(${index}, 'owner', this.value)" class="w-28 bg-slate-900 border border-slate-700 rounded p-1 text-slate-200"></td>
+          <td class="p-2"><input type="text" value="${item.deadline}" onchange="updateItem(${index}, 'deadline', this.value)" class="w-28 bg-slate-900 border border-slate-700 rounded p-1 text-slate-200"></td>
+          <td class="p-2">
+            <select onchange="updateItem(${index}, 'priority', this.value)" class="bg-slate-900 border border-slate-700 rounded p-1 text-slate-200">
+              <option value="High" ${item.priority === 'High' ? 'selected' : ''}>High</option>
+              <option value="Medium" ${item.priority === 'Medium' ? 'selected' : ''}>Medium</option>
+              <option value="Low" ${item.priority === 'Low' ? 'selected' : ''}>Low</option>
+            </select>
+          </td>
+          <td class="p-2 text-center"><button onclick="deleteItem(${index})" class="text-rose-400 hover:text-rose-300">🗑️</button></td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function updateItem(index, field, value) {
+      extractedData.actionItems[index][field] = value;
+    }
+
+    function deleteItem(index) {
+      extractedData.actionItems.splice(index, 1);
+      renderReviewTable();
+    }
+
+    function saveToDashboard() {
+      savedTasks = [...savedTasks, ...extractedData.actionItems.map(item => ({ ...item, status: 'Pending' }))];
+      alert('Action items saved to Dashboard!');
+      switchTab('dashboard');
+    }
+
+    function renderDashboard() {
+      const container = document.getElementById('dashboardList');
+      container.innerHTML = '';
+
+      if (savedTasks.length === 0) {
+        container.innerHTML = '<p class="text-xs text-slate-500 italic">No tasks saved yet. Extract items from a transcript first!</p>';
+        return;
+      }
+
+      document.getElementById('dashboardStats').innerText = `${savedTasks.length} Active Tasks`;
+
+      savedTasks.forEach((task, index) => {
+        const card = document.createElement('div');
+        card.className = "p-3 bg-slate-800 border border-slate-700 rounded-lg text-xs flex justify-between items-center";
+        card.innerHTML = `
+          <div>
+            <p class="font-semibold text-slate-200">${task.task}</p>
+            <p class="text-slate-400 mt-1">👤 ${task.owner} | 📅 ${task.deadline} | <span class="text-indigo-400 font-medium">${task.priority} Priority</span></p>
+          </div>
+          <span class="px-2 py-1 rounded bg-amber-950 text-amber-400 border border-amber-800 text-[10px] font-bold">${task.status}</span>
+        `;
+        container.appendChild(card);
+      });
     }
   </script>
 </body>
